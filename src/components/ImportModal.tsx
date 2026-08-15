@@ -80,6 +80,22 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           } else {
             errorMsg = "非酒馆卡或预设格式：未找到Tavern角色数据。";
           }
+        } else if (file.name.toLowerCase().endsWith('.jsonl')) {
+          const text = await file.text();
+          const lines = text.trim().split('\n');
+          data = [];
+          for (let k = 0; k < lines.length; k++) {
+            try {
+              const parsed = JSON.parse(lines[k]);
+              if (parsed) data.push(parsed);
+            } catch (e) {}
+          }
+          if (data.length > 0) {
+            isMain = true;
+            data = { isChatHistory: true, messages: data };
+          } else {
+            errorMsg = "无效的聊天记录文件。";
+          }
         } else if (file.type === 'application/json' || file.name.endsWith('.json')) {
           const text = await file.text();
           data = JSON.parse(text);
@@ -88,7 +104,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           const isWorldbook = data.entries !== undefined || (data.data && data.data.entries !== undefined);
           const isQR = Array.isArray(data) ? data.length > 0 && data[0].label !== undefined : data.quick_replies !== undefined || data.qrList !== undefined;
           const isScript = data.run !== undefined || data.type === 'tool' || (data.type === 'script' && data.content !== undefined && data.name !== undefined);
-          const isCharacter = !isTheme && !isAIPreset && !isWorldbook && !isQR && !isScript && !!(data.name || data.data?.name);
+          const isCharacter = !isTheme && !isAIPreset && !isWorldbook && !isQR && !isScript && !data.isChatHistory && !!(data.name || data.data?.name);
           
           if (isTheme || isAIPreset || isWorldbook || isQR || isScript || isCharacter) {
             isMain = true;
@@ -188,6 +204,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
     }
     
     const charsToSave: CharacterCard[] = [];
+    const chatsToSave: any[] = [];
     let successCount = 0;
     
     const { getCachedMeta } = await import('../lib/db');
@@ -255,6 +272,8 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           charName = data.name || file.name.replace(/\.[^/.]+$/, "");
         } else if (isCharacter) {
           charName = data.name || data.data?.name || 'Unknown Character';
+        } else if (data.isChatHistory) {
+          // It's a chat history
         }
         
         if (pathPrefix.length > 0) {
@@ -283,27 +302,17 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           targetFilePath = pathParts.join('/') + '/' + file.name;
         }
 
-        if (isAndroid()) {
-          if ((file as any).androidAbsPath) {
+        if (isAndroid() && (file as any).androidAbsPath) {
             // Already unzipped natively! 
             localFilePath = (file as any).androidAbsPath;
-            const buffer = await file.arrayBuffer(); // read it locally just strictly if needed, but wait!
-            // Actually, we don't need to read it if we skip setting avatarBlob, but we already read it during `parseChunk` to get metadata.
-            // By NOT setting avatarBlob, we prevent it from being loaded into IDB blobs table!
             avatarBlob = undefined;
             originalFile = undefined;
-          } else {
+        } else {
             const buffer = await file.arrayBuffer();
             if (file.type === 'image/png' || file.name.endsWith('.png')) {
-              avatarBlob = file;
+              avatarBlob = new Blob([buffer], { type: file.type || 'image/png' });
             }
-            originalFile = file;
-          }
-        } else {
-          if (file.type === 'image/png' || file.name.endsWith('.png')) {
-            avatarBlob = file;
-          }
-          originalFile = file;
+            originalFile = new File([buffer], file.name, { type: file.type || 'application/octet-stream' });
         }
 
         let baseF = file.name.replace(/\.[^/.]+$/, "");
@@ -315,6 +324,23 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
         }
         newPathsAssigned.add(autoImportFilename);
           
+        if (data.isChatHistory) {
+          let charId = "";
+          const aiMessage = data.messages.find((m: any) => !m.is_user && m.name);
+          if (aiMessage && aiMessage.name) {
+             const existingChar = existingMeta.find(c => c.name.toLowerCase() === aiMessage.name.toLowerCase());
+             if (existingChar) charId = existingChar.id;
+          }
+          chatsToSave.push({
+            id: crypto.randomUUID(),
+            characterId: charId,
+            name: file.name,
+            messages: data.messages,
+            createdAt: Date.now()
+          });
+          successCount++;
+          continue;
+        }
         const newChar: CharacterCard & { autoImportFilename?: string } = {
           id: crypto.randomUUID(),
           name: charName,
@@ -326,7 +352,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           originalFile,
           createdAt: Date.now(),
           folderId: targetFolderId,
-          avatarHistory: altImagesByMain.get(item) || []
+          avatarHistory: await Promise.all((altImagesByMain.get(item) || []).map(async altF => new Blob([await altF.arrayBuffer()], { type: altF.type || 'image/png' })))
         } as any;
         
         charsToSave.push(newChar);
@@ -340,6 +366,10 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
     
     if (charsToSave.length > 0) {
       await saveCharacters(charsToSave, extractedRoots);
+    }
+    if (chatsToSave.length > 0) {
+      const { saveChatsBulk } = await import('../lib/db');
+      await saveChatsBulk(chatsToSave);
     }
     
     setProgress(null);
@@ -400,7 +430,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
                if (hasSettingsJson && absPath.endsWith('/character.json')) {
                  continue;
                }
-               if (absPath.match(/\.(png|jpe?g|webp|gif|json)$/i)) {
+               if (absPath.match(/\.(png|jpe?g|webp|gif|json|jsonl)$/i)) {
                   let relativePath = absPath.substring(absPath.indexOf(extractedRoot) + extractedRoot.length + 1);
                   let type = 'application/octet-stream';
                   if (absPath.endsWith('.png')) type = 'image/png';
@@ -408,6 +438,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
                   else if (absPath.endsWith('.webp')) type = 'image/webp';
                   else if (absPath.endsWith('.gif')) type = 'image/gif';
                   else if (absPath.endsWith('.json')) type = 'application/json';
+                  else if (absPath.endsWith('.jsonl')) type = 'application/jsonl';
                   
                   const extractedFile = new File([], absPath.split('/').pop() || 'file', { type });
                   Object.defineProperty(extractedFile, 'webkitRelativePath', {
@@ -451,17 +482,23 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
             if (zip.files['settings.json'] && relativePath.endsWith('/character.json')) {
                continue;
             }
-            if (!zipEntry.dir && (relativePath.match(/\.(png|jpe?g|webp|gif|json)$/i))) {
-              const blob = await zipEntry.async('blob');
-              
+            if (!zipEntry.dir && (relativePath.match(/\.(png|jpe?g|webp|gif|json|jsonl)$/i))) {
               let type = 'application/octet-stream';
               if (relativePath.endsWith('.png')) type = 'image/png';
               else if (relativePath.match(/\.jpe?g$/i)) type = 'image/jpeg';
               else if (relativePath.endsWith('.webp')) type = 'image/webp';
               else if (relativePath.endsWith('.gif')) type = 'image/gif';
               else if (relativePath.endsWith('.json')) type = 'application/json';
+              else if (relativePath.endsWith('.jsonl')) type = 'application/jsonl';
               
-              const extractedFile = new File([blob], zipEntry.name.split('/').pop() || 'file', { type });
+              const extractedFile = new File([], zipEntry.name.split('/').pop() || 'file', { type });
+              
+              extractedFile.arrayBuffer = async () => await zipEntry.async('arraybuffer');
+              extractedFile.text = async () => await zipEntry.async('text');
+              extractedFile.slice = (start, end) => {
+                 // Not fully supported for lazy zip files but we don't slice them usually
+                 return new Blob([], { type });
+              };
               // Mock webkitRelativePath to preserve folder structure from ZIP
               Object.defineProperty(extractedFile, 'webkitRelativePath', {
                 value: relativePath,
@@ -476,7 +513,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
           return;
         }
       }
-      } else if (f.type.startsWith('image/') || f.name.match(/\.(png|jpe?g|webp|gif)$/i) || f.type === 'application/json' || f.name.endsWith('.json')) {
+      } else if (f.type.startsWith('image/') || f.name.match(/\.(png|jpe?g|webp|gif)$/i) || f.type === 'application/json' || f.name.match(/\.(json|jsonl)$/i)) {
         fileArray.push(f);
       }
     }
@@ -669,7 +706,7 @@ export function ImportModal({ isOpen, onClose, onImported, folderId }: Props) {
               type="file"
               ref={fileInputRef}
               onChange={(e) => e.target.files && handleFiles(e.target.files)}
-              accept=".png,.jpg,.jpeg,.webp,.gif,.json,.zip,image/*,application/json,application/zip,application/x-zip-compressed"
+              accept=".png,.jpg,.jpeg,.webp,.gif,.json,.jsonl,.zip,image/*,application/json,application/jsonl,application/zip,application/x-zip-compressed"
               className="hidden"
               multiple
             />
