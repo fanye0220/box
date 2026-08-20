@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Cloud, Download, Upload, Trash2, Github, Loader2, Search } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { Cloud, Download, Upload, Trash2, Github, Loader2, Search, Folder, ChevronRight } from 'lucide-react';
 import { listCloudCharacters, downloadCloudCharacter, deleteCloudCharacter } from '../lib/cloudDrive';
 import { getCachedMeta, saveCharacter, getFolders, saveFolder } from '../lib/db';
 import { initAuth, googleSignIn, logout, getAccessToken, listBackupsFromDrive, deleteBackupFromDrive, triggerManualBackup, triggerRestore, onSyncStateChange, SyncState } from '../lib/drive';
@@ -21,6 +21,35 @@ export function CloudSyncTab() {
   const [isLoadingCloud, setIsLoadingCloud] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [searchCloudQuery, setSearchCloudQuery] = useState("");
+  const [currentCloudPath, setCurrentCloudPath] = useState<string>("");
+
+  const cloudFolders = useMemo(() => {
+    if (searchCloudQuery) return [];
+    const folders = new Set<string>();
+    cloudChars.forEach(char => {
+      const charPath = char.appProperties?.folderPath || "";
+      if (charPath.startsWith(currentCloudPath ? currentCloudPath + '/' : '') && charPath !== currentCloudPath) {
+        const remaining = charPath.substring(currentCloudPath ? currentCloudPath.length + 1 : 0);
+        const nextSegment = remaining.split('/')[0];
+        if (nextSegment) {
+          folders.add(nextSegment);
+        }
+      }
+    });
+    return Array.from(folders).sort();
+  }, [cloudChars, currentCloudPath, searchCloudQuery]);
+
+  const filteredCloudChars = useMemo(() => {
+    return cloudChars.filter(char => {
+      if (searchCloudQuery) {
+        const charName = char.appProperties?.charName || char.name?.replace(/\.(zip|png|json|webp|jpg)$/i, '') || '';
+        return charName.toLowerCase().includes(searchCloudQuery.toLowerCase());
+      }
+      const charPath = char.appProperties?.folderPath || "";
+      return charPath === currentCloudPath;
+    });
+  }, [cloudChars, searchCloudQuery, currentCloudPath]);
+
 
   const loadCloudChars = async (t: string) => {
     setIsLoadingCloud(true);
@@ -340,7 +369,7 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
               ) : (
                 <>
                   <Upload className="w-5 h-5" />
-                  创建并上传新备份
+                  一键同步所有本地卡片到云库
                 </>
               )}
             </button>
@@ -348,7 +377,7 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
 
           <div className="p-4 bg-white/5 border border-white/10 rounded-xl space-y-4">
             <div className="flex items-center justify-between">
-              <h4 className="text-sm font-medium text-white/80">历史备份档案</h4>
+              <h4 className="text-sm font-medium text-white/80">遗留 Zip 备份档案</h4>
               <button onClick={() => {if(token) loadBackups(token)}} className="text-xs text-blue-400 hover:text-blue-300 transition px-2 py-1 bg-blue-500/10 rounded-md">
                 刷新
               </button>
@@ -397,7 +426,7 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                     </div>
                   </div>
                 ))}
-              </div>
+                </div>
             )}
           </div>
         </div>
@@ -444,16 +473,76 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                 <p className="text-sm mt-2">在角色列表中勾选卡片即可上传至云盘</p>
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
-                {cloudChars.filter(char => {
-                  if (!searchCloudQuery) return true;
-                  const charName = char.appProperties?.charName || char.name?.replace(/\\.(zip|png|json|webp|jpg)$/i, '') || '';
-                  return charName.toLowerCase().includes(searchCloudQuery.toLowerCase());
-                }).map(char => {
-                  const charName = char.appProperties?.charName || char.name?.replace(/\\.(zip|png|json|webp|jpg)$/i, '');
-                  return (
-                    <div key={char.id} className="relative group rounded-xl overflow-hidden bg-white/5 border border-white/10 flex flex-col h-auto">
-                      <div className="relative aspect-[3/4] overflow-hidden bg-black/40">
+              <>
+                {!searchCloudQuery && (
+                  <div className="flex items-center gap-2 mb-4 text-sm text-white/60 overflow-x-auto whitespace-nowrap pb-2">
+                    <button onClick={() => setCurrentCloudPath("")} className="hover:text-white transition">云端根目录</button>
+                    {currentCloudPath && currentCloudPath.split('/').map((part, idx, arr) => (
+                      <div key={idx} className="flex items-center gap-2 shrink-0">
+                        <ChevronRight className="w-4 h-4 opacity-50" />
+                        <button 
+                          onClick={() => setCurrentCloudPath(arr.slice(0, idx + 1).join('/'))}
+                          className="hover:text-white transition"
+                        >
+                          {part}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                {!searchCloudQuery && cloudFolders.length > 0 && (
+                  <div className="flex flex-wrap gap-2 sm:gap-3 mb-6">
+                                        {cloudFolders.map(folderName => {
+                      const fullFolderPath = currentCloudPath ? `${currentCloudPath}/${folderName}` : folderName;
+                      return (
+                      <div key={folderName} className="relative group flex items-center bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition overflow-hidden max-w-full pr-1">
+                        <button
+                          onClick={() => setCurrentCloudPath(fullFolderPath)}
+                          className="flex items-center gap-2 p-2.5 sm:p-3 text-left min-w-0"
+                        >
+                          <Folder className="w-5 h-5 sm:w-6 sm:h-6 text-blue-400 shrink-0" />
+                          <span className="text-sm font-medium text-white/90 truncate" title={folderName}>{folderName}</span>
+                        </button>
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (window.confirm(`确定要删除云端文件夹 "${folderName}" 及其包含的所有卡片吗？此操作不可恢复！`)) {
+                               const charsToDelete = cloudChars.filter(c => {
+                                  const p = c.appProperties?.folderPath || "";
+                                  return p === fullFolderPath || p.startsWith(fullFolderPath + '/');
+                               });
+                               try {
+                                  setIsLoadingCloud(true);
+                                  for (const c of charsToDelete) {
+                                      await deleteCloudCharacter(token!, c.id);
+                                  }
+                                  setCloudChars(prev => prev.filter(c => !charsToDelete.includes(c)));
+                               } catch (err) {
+                                  alert("删除部分文件时出错");
+                               } finally {
+                                  setIsLoadingCloud(false);
+                               }
+                            }
+                          }}
+                          className="p-2 sm:p-2.5 text-white/30 hover:text-red-400 hover:bg-red-500/20 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition shrink-0 rounded-lg"
+                          title="删除文件夹"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )})}
+
+
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
+                  {filteredCloudChars.map(char => {
+                    const charName = char.appProperties?.charName || char.name?.replace(/\\.(zip|png|json|webp|jpg)$/i, '');
+                    return (
+                      <div key={char.id} className="relative group rounded-xl overflow-hidden bg-white/5 border border-white/10 flex flex-col h-auto">
+                        <div className="relative aspect-[3/4] overflow-hidden bg-black/40">
                         {char.thumbnailLink ? (
                           
                           <>
@@ -516,6 +605,7 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                            <h4 className="font-medium text-xs sm:text-sm text-white/90 truncate">{charName}</h4>
                            <p className="text-[10px] sm:text-xs text-white/50 mt-0.5 truncate">
                              {char.size ? (parseInt(char.size) / 1024 / 1024).toFixed(2) + ' MB' : '未知大小'}
+                             {char.createdTime ? ` · ${new Date(char.createdTime).toLocaleDateString()}` : ''}
                            </p>
                         </div>
                         <div className="flex items-center gap-1.5 sm:gap-2 mt-2 lg:hidden">
@@ -540,6 +630,7 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                   );
                 })}
               </div>
+              </>
             )}
           </div>
         </div>
