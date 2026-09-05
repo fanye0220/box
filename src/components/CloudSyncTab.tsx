@@ -74,10 +74,17 @@ export function CloudSyncTab() {
     if (!token) return;
     setDownloadingId(fileId);
     try {
-        const { jsonData, avatarBlob, studioMeta } = await downloadCloudCharacter(token, fileId, fileName, (msg) => console.log(msg));
+        const { jsonData, avatarBlob, studioMeta, avatarHistory } = await downloadCloudCharacter(token, fileId, fileName, (msg) => console.log(msg));
         const existingChars = await getCachedMeta();
-        const extractedName = jsonData.name || jsonData.data?.name || charName;
-        const existing = existingChars.find(c => c.name?.trim() === extractedName?.trim());
+        const extractedName =
+          appProperties?.charName ||
+          jsonData.name ||
+          jsonData.data?.name ||
+          charName;
+        const cloudCharId = appProperties?.charId;
+        const existing = cloudCharId
+          ? existingChars.find(c => c.id === cloudCharId)
+          : existingChars.find(c => c.name?.trim() === extractedName?.trim());
         
         let targetId: string = crypto.randomUUID();
         let folderId = undefined;
@@ -89,7 +96,21 @@ export function CloudSyncTab() {
             createTime = existing.createdAt || Date.now();
         }
         
-        const mergedMeta = { ...studioMeta, ...appProperties };
+        let mergedMeta = { ...studioMeta, ...appProperties };
+        if (!existing && !mergedMeta.folderPath) {
+           const isTheme = jsonData.name === "theme_config" || jsonData.type === "theme";
+           const isAIPreset = jsonData.type === "preset" || (jsonData.name && typeof jsonData.name === 'string' && (jsonData.name.includes("Preset") || jsonData.name.includes("Prompt")));
+           const isWorldbook = jsonData.entries !== undefined || jsonData.name === "Worldbook" || jsonData.data?.entries !== undefined;
+           const isQR = jsonData.qrList !== undefined || jsonData.version === 2 || jsonData.quick_replies !== undefined;
+           const isScript = jsonData.type === "script" && jsonData.content !== undefined && jsonData.name !== undefined;
+           
+           if (isTheme) mergedMeta.folderPath = "美化";
+           else if (isAIPreset) mergedMeta.folderPath = "预设";
+           else if (isWorldbook) mergedMeta.folderPath = "世界书";
+           else if (isQR) mergedMeta.folderPath = "快速回复";
+           else if (isScript) mergedMeta.folderPath = "工具区";
+        }
+        
         if (!existing && mergedMeta?.folderPath) {
            const allFolders = await getFolders();
            const parts = mergedMeta.folderPath.split('/');
@@ -127,7 +148,7 @@ export function CloudSyncTab() {
             data: jsonData,
             createdAt: createTime,
             folderId,
-            avatarHistory: []
+            avatarHistory: avatarHistory || []
         };
         
         if (avatarBlob) {
@@ -257,9 +278,11 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
 
   const formatSize = (bytes: string | number) => {
     const b = Number(bytes);
-    if (!b || isNaN(b)) return '0 B';
-    const mb = b / (1024 * 1024);
-    return mb.toFixed(2) + ' MB';
+    if (!b || isNaN(b)) return '未知大小';
+    if (b < 1024) return `${b} B`;
+    if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+    if (b < 1024 * 1024 * 1024) return `${(b / 1024 / 1024).toFixed(2)} MB`;
+    return `${(b / 1024 / 1024 / 1024).toFixed(2)} GB`;
   };
 
   if (needsAuth) {
@@ -352,7 +375,7 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                     setActionFileId(actionFileId === 'refresh' ? null : 'refresh');
                   }}
                 />
-                <div className="w-11 h-6 toggle-track toggle-knob peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:border after:rounded-full after:h-5 after:w-5 after:transition-all"></div>
+                <div className="w-11 h-6 bg-black/40 border border-white/20 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white/80 peer-checked:after:bg-white after:border-gray-300/20 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500 peer-checked:border-blue-500 shadow-inner"></div>
               </div>
             </label>
 
@@ -492,18 +515,19 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                 )}
                 
                 {!searchCloudQuery && cloudFolders.length > 0 && (
-                  <div className="flex flex-wrap gap-2 sm:gap-3 mb-6">
-                                        {cloudFolders.map(folderName => {
+                  <div className="flex flex-wrap gap-2.5 sm:gap-3 mb-6">
+                    {cloudFolders.map(folderName => {
                       const fullFolderPath = currentCloudPath ? `${currentCloudPath}/${folderName}` : folderName;
                       return (
-                      <div key={folderName} className="relative group flex items-center bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl transition overflow-hidden max-w-full pr-1">
+                      <div key={folderName} className="relative group inline-flex items-stretch bg-white/5 hover:bg-white/10 border border-white/10 rounded-2xl transition overflow-hidden shadow-sm max-w-full">
                         <button
                           onClick={() => setCurrentCloudPath(fullFolderPath)}
-                          className="flex items-center gap-2 p-2.5 sm:p-3 text-left min-w-0"
+                          className="flex items-center gap-2 sm:gap-2.5 pl-3.5 pr-2 py-3 sm:pl-4 sm:pr-3 text-left min-w-0 shrink"
                         >
-                          <Folder className="w-5 h-5 sm:w-6 sm:h-6 text-blue-400 shrink-0" />
-                          <span className="text-sm font-medium text-white/90 truncate" title={folderName}>{folderName}</span>
+                          <Folder className="w-5 h-5 text-blue-400 shrink-0" />
+                          <span className="text-[14px] font-medium text-white/90 truncate max-w-[130px] sm:max-w-[200px]">{folderName}</span>
                         </button>
+                        <div className="w-[1px] bg-white/10 my-2"></div>
                         <button
                           onClick={async (e) => {
                             e.stopPropagation();
@@ -525,14 +549,13 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                                }
                             }
                           }}
-                          className="p-2 sm:p-2.5 text-white/30 hover:text-red-400 hover:bg-red-500/20 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition shrink-0 rounded-lg"
+                          className="px-3.5 sm:px-4 text-red-400/80 hover:text-red-400 hover:bg-red-500/20 active:bg-red-500/30 sm:opacity-0 sm:group-hover:opacity-100 transition shrink-0 flex items-center justify-center"
                           title="删除文件夹"
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Trash2 className="w-4 h-4 sm:w-5 sm:h-5" />
                         </button>
                       </div>
                     )})}
-
 
                   </div>
                 )}
@@ -604,7 +627,7 @@ const handleDeleteCloudChar = async (fileId: string, name: string) => {
                         <div>
                            <h4 className="font-medium text-xs sm:text-sm text-white/90 truncate">{charName}</h4>
                            <p className="text-[10px] sm:text-xs text-white/50 mt-0.5 truncate">
-                             {char.size ? (parseInt(char.size) / 1024 / 1024).toFixed(2) + ' MB' : '未知大小'}
+                              {char.size ? formatSize(char.size) : '未知大小'}
                              {char.createdTime ? ` · ${new Date(char.createdTime).toLocaleDateString()}` : ''}
                            </p>
                         </div>
